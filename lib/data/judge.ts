@@ -33,6 +33,18 @@ async function callJudgeRpc(
   return judgePayloadSchema.parse(data) as JudgeAssignmentPayload;
 }
 
+async function runJudgeRpc(
+  fn: "skip_assignment" | "complete_assignment",
+  args: Record<string, string>,
+) {
+  const supabase = createServiceRoleClient();
+  const { error } = await supabase.rpc(fn, args as never);
+
+  if (error) {
+    throw new Error(getRpcErrorMessage(error));
+  }
+}
+
 export async function getNextAssignment(token: string) {
   return callJudgeRpc("get_next_assignment", {
     p_judge_token: token,
@@ -50,7 +62,7 @@ export async function confirmAssignmentFound(
 }
 
 export async function skipAssignment(token: string, assignmentId: string) {
-  await callJudgeRpc("skip_assignment", {
+  await runJudgeRpc("skip_assignment", {
     p_assignment_id: assignmentId,
     p_judge_token: token,
   });
@@ -63,7 +75,7 @@ export async function completeAssignment(
   assignmentId: string,
   outcome: "better" | "worse" | "seed",
 ) {
-  await callJudgeRpc("complete_assignment", {
+  await runJudgeRpc("complete_assignment", {
     p_assignment_id: assignmentId,
     p_judge_token: token,
     p_outcome: outcome,
