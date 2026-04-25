@@ -679,34 +679,38 @@ export async function getAdminDashboardState(): Promise<AdminDashboardState> {
   };
 }
 
-export async function generateJudgeLinks(count: number, prefix = "Judge") {
+export async function createJudgeLink(name: string) {
   const supabase = createServiceRoleClient();
   const event = await getRequiredEvent();
 
-  const judgeRows = Array.from({ length: count }, (_, index) => ({
-    event_id: event.id,
-    name: `${prefix} ${index + 1}`,
-    token: crypto.randomBytes(24).toString("base64url"),
-    active: true,
-  }));
-
   const { data, error } = await supabase
     .from("judges")
-    .insert(judgeRows)
+    .insert({
+    event_id: event.id,
+    name,
+    token: crypto.randomBytes(24).toString("base64url"),
+    active: true,
+    })
     .select("id, name, token, active, created_at, last_seen_at");
 
   if (error) {
     throw new Error(error.message);
   }
 
-  return (data ?? []).map((judge) => ({
+  const judge = (data ?? [])[0];
+
+  if (!judge) {
+    throw new Error("Could not create the judge link.");
+  }
+
+  return {
     ...judge,
     assignmentCount: 0,
     comparisonCount: 0,
     liveAssignmentCount: 0,
     revoked: !judge.active,
     deletable: true,
-  })) as JudgeLinkEntry[];
+  } as JudgeLinkEntry;
 }
 
 export async function updateEventState(action: AdminAction) {

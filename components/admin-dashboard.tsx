@@ -68,8 +68,7 @@ export function AdminDashboard() {
   const [origin] = useState(() =>
     typeof window === "undefined" ? "" : window.location.origin,
   );
-  const [judgeCount, setJudgeCount] = useState(6);
-  const [judgePrefix, setJudgePrefix] = useState("Judge");
+  const [judgeName, setJudgeName] = useState("");
   const [selectedJudgeIdForQr, setSelectedJudgeIdForQr] = useState<string | null>(
     null,
   );
@@ -201,7 +200,7 @@ export function AdminDashboard() {
   }
 
   async function handleGenerateJudges() {
-    if (!accessToken) {
+    if (!accessToken || !judgeName.trim()) {
       return;
     }
 
@@ -212,15 +211,15 @@ export function AdminDashboard() {
     try {
       await postAdminAction("/api/admin/qr", {
         accessToken,
-        count: judgeCount,
-        prefix: judgePrefix,
+        name: judgeName.trim(),
       });
+      setJudgeName("");
       await loadDashboard(accessToken);
     } catch (requestError) {
       setError(
         requestError instanceof Error
           ? requestError.message
-          : "Could not generate judge QR links.",
+          : "Could not create the judge QR link.",
       );
     } finally {
       setActionPending(false);
@@ -490,31 +489,19 @@ export function AdminDashboard() {
         <SectionCard className="space-y-5">
           <SectionHeading
             eyebrow="Judge QR"
-            title="Generate entry links"
-            description="Each link lands directly on the mobile judge flow. Print the QR or open it directly from this panel."
+            title="Add one judge at a time"
+            description="Create each judge link individually so every QR card can carry a custom name."
           />
 
-          <div className="grid gap-4 md:grid-cols-[0.6fr_0.4fr]">
+          <div className="grid gap-4">
             <label className="grid gap-2">
-              <span className="text-sm font-semibold text-stone-900">Judge count</span>
+              <span className="text-sm font-semibold text-stone-900">Judge name</span>
               <input
-                type="number"
-                min={1}
-                max={24}
-                value={judgeCount}
+                value={judgeName}
                 onChange={(event) => {
-                  setJudgeCount(Number(event.target.value));
+                  setJudgeName(event.target.value);
                 }}
-                className="min-h-13 rounded-2xl border border-stone-300 bg-white px-4 text-base text-stone-950 outline-none transition focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
-              />
-            </label>
-            <label className="grid gap-2">
-              <span className="text-sm font-semibold text-stone-900">Name prefix</span>
-              <input
-                value={judgePrefix}
-                onChange={(event) => {
-                  setJudgePrefix(event.target.value);
-                }}
+                placeholder="Judge Maya"
                 className="min-h-13 rounded-2xl border border-stone-300 bg-white px-4 text-base text-stone-950 outline-none transition focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
               />
             </label>
@@ -522,14 +509,14 @@ export function AdminDashboard() {
 
           <button
             type="button"
-            disabled={actionPending}
+            disabled={actionPending || !judgeName.trim()}
             onClick={() => {
               void handleGenerateJudges();
             }}
             className="inline-flex min-h-14 items-center justify-center rounded-full bg-stone-950 px-6 text-sm font-semibold uppercase tracking-[0.2em] text-stone-50 transition hover:bg-stone-800 disabled:opacity-50"
           >
             {actionPending ? <LoaderCircle className="mr-2 size-4 animate-spin" /> : null}
-            Generate judge links
+            Add judge link
           </button>
         </SectionCard>
       </div>
@@ -738,12 +725,12 @@ export function AdminDashboard() {
         <SectionHeading
           eyebrow="Judge links"
           title="QR entry cards"
-          description="Use these existing links for quick in-room onboarding. New links are added to this list every time you generate more."
+          description="Use these existing links for quick in-room onboarding. New links are added to this list every time you add another named judge."
         />
         {dashboard.judges.length === 0 ? (
           <EmptyState
             title="No judge links yet."
-            description="Generate QR codes above and they will appear here immediately."
+            description="Add a named judge above and the QR card will appear here immediately."
           />
         ) : (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">

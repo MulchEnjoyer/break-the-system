@@ -1,7 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { startTransition, useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from "react";
 import { ExternalLink, LoaderCircle, MapPin, RotateCcw, TimerReset } from "lucide-react";
 
 import { FIND_STAGE_SECONDS, JUDGE_STAGE_SECONDS } from "@/lib/constants";
@@ -42,6 +49,8 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
   const [sessionRevoked, setSessionRevoked] = useState(!initialPayload.judge.active);
   const [now, setNow] = useState(() => Date.now());
   const autoSkipAssignmentId = useRef<string | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const alarmIntervalRef = useRef<number | null>(null);
 
   const assignment = payload.assignment;
   const expiresAtMs = assignment ? new Date(assignment.expires_at).getTime() : 0;
@@ -53,10 +62,96 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
   const canCompare = Boolean(isJudgeStage && secondsRemaining === 0);
   const hasReference = Boolean(payload.judgeState.last_completed_project_id);
 
+  const stopAlarmLoop = useCallback(() => {
+    if (alarmIntervalRef.current !== null) {
+      window.clearInterval(alarmIntervalRef.current);
+      alarmIntervalRef.current = null;
+    }
+  }, []);
+
+  const ensureAlarmAudio = useCallback(async () => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+
+    const AudioContextConstructor =
+      window.AudioContext ||
+      (
+        window as Window & {
+          webkitAudioContext?: typeof AudioContext;
+        }
+      ).webkitAudioContext;
+
+    if (!AudioContextConstructor) {
+      return null;
+    }
+
+    if (!audioContextRef.current) {
+      audioContextRef.current = new AudioContextConstructor();
+    }
+
+    if (audioContextRef.current.state === "suspended") {
+      try {
+        await audioContextRef.current.resume();
+      } catch {
+        return null;
+      }
+    }
+
+    return audioContextRef.current;
+  }, []);
+
+  const playAlarmBurst = useCallback(async () => {
+    const context = await ensureAlarmAudio();
+
+    if (!context) {
+      return;
+    }
+
+    const startAt = context.currentTime + 0.01;
+    const pulseLengthSeconds = 0.18;
+    const gapSeconds = 0.05;
+    const frequencies = [1180, 820, 1180, 820];
+
+    frequencies.forEach((frequency, index) => {
+      const offset = index * (pulseLengthSeconds + gapSeconds);
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+
+      oscillator.type = "square";
+      oscillator.frequency.setValueAtTime(frequency, startAt + offset);
+
+      gain.gain.setValueAtTime(0.0001, startAt + offset);
+      gain.gain.exponentialRampToValueAtTime(0.45, startAt + offset + 0.01);
+      gain.gain.exponentialRampToValueAtTime(
+        0.0001,
+        startAt + offset + pulseLengthSeconds,
+      );
+
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(startAt + offset);
+      oscillator.stop(startAt + offset + pulseLengthSeconds);
+    });
+  }, [ensureAlarmAudio]);
+
+  const startAlarmLoop = useCallback(() => {
+    if (alarmIntervalRef.current !== null) {
+      return;
+    }
+
+    void playAlarmBurst();
+    alarmIntervalRef.current = window.setInterval(() => {
+      void playAlarmBurst();
+    }, 1400);
+  }, [playAlarmBurst]);
+
   async function performJudgeAction(
     endpoint: string,
     body: Record<string, string>,
   ) {
+    stopAlarmLoop();
+    void ensureAlarmAudio();
     setPending(true);
     setError(null);
 
@@ -112,8 +207,16 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
       setNow(Date.now());
     }, 250);
 
-    return () => window.clearInterval(intervalId);
-  }, []);
+    return () => {
+      window.clearInterval(intervalId);
+      stopAlarmLoop();
+
+      if (audioContextRef.current) {
+        void audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+    };
+  }, [stopAlarmLoop]);
 
   useEffect(() => {
     if (sessionRevoked || !payload.judgingOpen || assignment || pending) {
@@ -146,6 +249,25 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
     autoSkipAssignmentId.current = assignment.id;
     skipAssignmentInEffect(assignment.id);
   }, [assignment, pending, secondsRemaining, sessionRevoked]);
+
+  useEffect(() => {
+    if (
+      sessionRevoked ||
+      pending ||
+      !assignment ||
+      assignment.status !== "reserved_judge" ||
+      secondsRemaining > 0
+    ) {
+      stopAlarmLoop();
+      return;
+    }
+
+    startAlarmLoop();
+
+    return () => {
+      stopAlarmLoop();
+    };
+  }, [assignment, pending, secondsRemaining, sessionRevoked, startAlarmLoop, stopAlarmLoop]);
 
   return (
     <div className="grid gap-4">
@@ -366,6 +488,9 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
 
             {isJudgeStage && canCompare ? (
               <div className="space-y-4 rounded-[24px] border border-stone-200 bg-stone-50 p-4">
+                <div className="rounded-[18px] border border-rose-300 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
+                  Time is up. The alarm will keep sounding until you record a decision or skip.
+                </div>
                 {hasReference ? (
                   <>
                     <p className="text-xs font-semibold uppercase tracking-[0.24em] text-stone-500">

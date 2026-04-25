@@ -72,17 +72,11 @@ export const adminSessionSchema = z.object({
 
 export const judgeGenerationSchema = z.object({
   accessToken: z.string().trim().min(1),
-  count: z.coerce
-    .number()
-    .int()
-    .min(1, "Generate at least one judge link.")
-    .max(24, "This MVP caps bulk judge generation at 24."),
-  prefix: z
+  name: z
     .string()
     .trim()
-    .max(32, "Keep the judge prefix under 32 characters.")
-    .optional()
-    .transform((value) => value || "Judge"),
+    .min(1, "Judge name is required.")
+    .max(48, "Keep the judge name under 48 characters."),
 });
 
 export const eventControlSchema = z.object({

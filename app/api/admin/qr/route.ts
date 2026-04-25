@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { generateJudgeLinks, verifyAdminAccess } from "@/lib/data/admin";
+import { createJudgeLink, verifyAdminAccess } from "@/lib/data/admin";
 import { judgeGenerationSchema } from "@/lib/validations";
 
 export async function POST(request: Request) {
@@ -16,16 +16,16 @@ export async function POST(request: Request) {
     }
 
     await verifyAdminAccess(parsed.data.accessToken);
-    const judges = await generateJudgeLinks(parsed.data.count, parsed.data.prefix);
+    const judge = await createJudgeLink(parsed.data.name);
 
-    return NextResponse.json({ judges });
+    return NextResponse.json({ judge });
   } catch (error) {
     return NextResponse.json(
       {
         error:
           error instanceof Error
             ? error.message
-            : "Could not generate judge links.",
+            : "Could not create the judge link.",
       },
       { status: 400 },
     );
