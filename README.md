@@ -1,36 +1,98 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Break The System
 
-## Getting Started
+Production-oriented MVP for in-person hackathon judging with:
 
-First, run the development server:
+- `Next.js` App Router on Vercel
+- `Supabase` Postgres/Auth
+- Mobile-first judge flow with QR entry
+- Dynamic coverage-first pairwise assignment
+- Live admin dashboard with ranking freeze support
+
+## Included routes
+
+- `/submit` public project intake
+- `/judge/[token]` judge mobile flow
+- `/admin` authenticated organizer dashboard
+- `/results` live or frozen read-only board
+- `/login` Supabase admin login
+
+## Local setup
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Create environment variables:
+
+```bash
+cp .env.example .env.local
+```
+
+Fill in:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+3. Run the SQL migration in Supabase:
+
+- Open the SQL editor in your Supabase project.
+- Run [`supabase/migrations/202504250001_initial_schema.sql`](/Users/arenung/BreakTheSystem/supabase/migrations/202504250001_initial_schema.sql)
+
+That migration creates:
+
+- the event, project, judge, assignment, comparison, ranking, and admin tables
+- RLS policies
+- judge assignment RPC functions
+- one default event row
+
+4. Create at least one admin auth user in Supabase Auth.
+
+5. Add that email to `public.admin_users`, for example:
+
+```sql
+insert into public.admin_users (email)
+values ('organizer@example.com');
+```
+
+6. Start the app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Deployment on Vercel
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. Push this project to a Git repository.
+2. Import it into Vercel as a Next.js project.
+3. Add the same environment variables from `.env.local`.
+4. Make sure the Supabase migration has already been applied in the production project.
+5. Create the organizer auth users in Supabase Auth and whitelist their emails in `admin_users`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## How the judging model works
 
-## Learn More
+- Judges enter through QR codes generated in `/admin`.
+- Each assignment starts as `reserved_find` for 1 minute.
+- When the judge taps `Found team`, the reservation becomes `reserved_judge` for 2 minutes.
+- If the judge skips or the lease expires, the project returns to the pool.
+- `get_next_assignment` always prefers the lowest-visit eligible projects first, excludes live reservations, and excludes projects already finished or skipped by that judge.
+- Pairwise outcomes update a simple Elo-style rating in `project_rankings`.
+- Freezing results copies the current ranking order into `ranking_snapshots` and switches admin/results pages to that frozen snapshot.
 
-To learn more about Next.js, take a look at the following resources:
+## Operational notes
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `visit_count` increases only when a project was actually reached during the judging stage.
+- The assignment lease uses a small 15-second backend grace window to absorb mobile latency when judges submit right after a timer ends.
+- Admin updates use polling every 10 seconds. This keeps the MVP simple while still giving live coverage visibility.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Validation
 
-## Deploy on Vercel
+Run:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm run lint
+npm run typecheck
+npm run build
+```
