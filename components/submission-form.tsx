@@ -60,7 +60,7 @@ export function SubmissionForm({
           </div>
           <div className="mt-8 space-y-4 text-sm leading-6 text-stone-700">
             <p>Required fields stay intentionally short so teams can finish on their phones in under a minute.</p>
-            <p>Table numbers must be unique. If a number is already taken, the form will block it immediately after submit.</p>
+            <p>Shared tables are allowed. Judges will use the table number plus your team and project title to find the right project.</p>
             <p>Category stream is stored for filtering and prize segmentation, but judges still operate in one common room-wide queue.</p>
           </div>
         </div>
@@ -161,9 +161,9 @@ export function SubmissionForm({
                 </label>
                 <input
                   name="projectLink"
-                  type="url"
+                  type="text"
                   className="mt-2 min-h-13 w-full rounded-2xl border border-stone-300 bg-white px-4 text-base text-stone-950 outline-none transition focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
-                  placeholder="https://example.com/demo"
+                  placeholder="example.com/demo"
                   disabled={pending || !submissionsOpen}
                 />
                 <FieldError messages={state.errors?.projectLink} />

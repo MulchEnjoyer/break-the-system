@@ -2,7 +2,16 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { LoaderCircle, LogOut, RefreshCw } from "lucide-react";
+import {
+  Ban,
+  ExternalLink,
+  Expand,
+  LoaderCircle,
+  LogOut,
+  RefreshCw,
+  Trash2,
+  X,
+} from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 
 import { COVERAGE_TARGET } from "@/lib/constants";
@@ -55,11 +64,15 @@ export function AdminDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionPending, setActionPending] = useState(false);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
   const [origin] = useState(() =>
     typeof window === "undefined" ? "" : window.location.origin,
   );
   const [judgeCount, setJudgeCount] = useState(6);
   const [judgePrefix, setJudgePrefix] = useState("Judge");
+  const [selectedJudgeIdForQr, setSelectedJudgeIdForQr] = useState<string | null>(
+    null,
+  );
 
   async function loadDashboard(token: string) {
     setError(null);
@@ -145,12 +158,28 @@ export function AdminDashboard() {
     return () => window.clearInterval(intervalId);
   }, [accessToken]);
 
+  useEffect(() => {
+    if (!selectedJudgeIdForQr) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedJudgeIdForQr(null);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedJudgeIdForQr]);
+
   async function handleEventAction(action: AdminAction) {
     if (!accessToken) {
       return;
     }
 
     setActionPending(true);
+    setBusyKey(action);
     setError(null);
 
     try {
@@ -167,6 +196,7 @@ export function AdminDashboard() {
       );
     } finally {
       setActionPending(false);
+      setBusyKey(null);
     }
   }
 
@@ -176,6 +206,7 @@ export function AdminDashboard() {
     }
 
     setActionPending(true);
+    setBusyKey("generate-judges");
     setError(null);
 
     try {
@@ -193,6 +224,86 @@ export function AdminDashboard() {
       );
     } finally {
       setActionPending(false);
+      setBusyKey(null);
+    }
+  }
+
+  async function handleProjectWithdrawal(projectId: string) {
+    if (!accessToken) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Remove this submission from the active judging pool?",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setActionPending(true);
+    setBusyKey(`project:${projectId}`);
+    setError(null);
+
+    try {
+      await postAdminAction("/api/admin/projects", {
+        accessToken,
+        projectId,
+        action: "withdraw",
+      });
+      await loadDashboard(accessToken);
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Could not remove the submission.",
+      );
+    } finally {
+      setActionPending(false);
+      setBusyKey(null);
+    }
+  }
+
+  async function handleJudgeAction(judgeId: string, action: "revoke" | "delete") {
+    if (!accessToken) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      action === "revoke"
+        ? "Revoke this judge link and release any live assignment?"
+        : "Delete this unused judge link permanently?",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setActionPending(true);
+    setBusyKey(`judge:${judgeId}:${action}`);
+    setError(null);
+
+    try {
+      await postAdminAction("/api/admin/judges", {
+        accessToken,
+        judgeId,
+        action,
+      });
+
+      if (selectedJudgeIdForQr === judgeId) {
+        setSelectedJudgeIdForQr(null);
+      }
+
+      await loadDashboard(accessToken);
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Could not update the judge.",
+      );
+    } finally {
+      setActionPending(false);
+      setBusyKey(null);
     }
   }
 
@@ -209,6 +320,12 @@ export function AdminDashboard() {
 
   const controlButtonClass =
     "inline-flex min-h-12 items-center justify-center rounded-full border px-5 text-xs font-semibold uppercase tracking-[0.2em] transition disabled:cursor-not-allowed disabled:opacity-50";
+  const selectedJudgeForQr =
+    dashboard.judges.find((judge) => judge.id === selectedJudgeIdForQr) ?? null;
+  const selectedJudgeUrl =
+    selectedJudgeForQr && origin
+      ? buildJudgeRoute(origin, selectedJudgeForQr.token)
+      : "";
 
   return (
     <div className="grid gap-6">
@@ -563,6 +680,7 @@ export function AdminDashboard() {
                 <th className="pb-3">Visits</th>
                 <th className="pb-3">Comparisons</th>
                 <th className="pb-3">Status</th>
+                <th className="pb-3 text-right">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -593,6 +711,21 @@ export function AdminDashboard() {
                         tone={project.visitCount < COVERAGE_TARGET ? "warning" : "default"}
                       />
                     )}
+                  </td>
+                  <td className="py-4 text-right">
+                    <button
+                      type="button"
+                      disabled={actionPending}
+                      onClick={() => {
+                        void handleProjectWithdrawal(project.id);
+                      }}
+                      className="inline-flex min-h-10 items-center justify-center rounded-full border border-rose-300 bg-rose-50 px-4 text-xs font-semibold uppercase tracking-[0.18em] text-rose-800 transition hover:border-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busyKey === `project:${project.id}` ? (
+                        <LoaderCircle className="mr-2 size-4 animate-spin" />
+                      ) : null}
+                      Remove
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -630,26 +763,140 @@ export function AdminDashboard() {
                       <p className="mt-1 text-sm text-stone-600">
                         Last seen {formatDateTime(judge.last_seen_at)}
                       </p>
+                      <p className="mt-2 text-xs uppercase tracking-[0.18em] text-stone-500">
+                        {judge.assignmentCount} assignments · {judge.comparisonCount} comparisons · {judge.liveAssignmentCount} live
+                      </p>
                     </div>
                     <StatusPill
-                      label={judge.active ? "Active" : "Inactive"}
-                      tone={judge.active ? "success" : "warning"}
+                      label={judge.revoked ? "Revoked" : "Active"}
+                      tone={judge.revoked ? "warning" : "success"}
                     />
                   </div>
                   {judgeUrl ? (
-                    <div className="mt-4 rounded-[22px] border border-stone-200 bg-stone-50 p-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedJudgeIdForQr(judge.id);
+                      }}
+                      className="mt-4 block w-full rounded-[22px] border border-stone-200 bg-stone-50 p-4 text-left transition hover:border-stone-950"
+                    >
                       <QRCodeSVG value={judgeUrl} size={180} className="mx-auto" />
-                    </div>
+                      <div className="mt-3 flex items-center justify-center text-xs font-semibold uppercase tracking-[0.18em] text-stone-600">
+                        <Expand className="mr-2 size-4" />
+                        Full-screen QR
+                      </div>
+                    </button>
                   ) : null}
                   <p className="mt-4 break-all text-xs leading-6 text-stone-600">
                     {judgeUrl}
                   </p>
+                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      disabled={actionPending || judge.revoked}
+                      onClick={() => {
+                        void handleJudgeAction(judge.id, "revoke");
+                      }}
+                      className="inline-flex min-h-11 items-center justify-center rounded-full border border-amber-300 bg-amber-50 px-4 text-xs font-semibold uppercase tracking-[0.18em] text-amber-900 transition hover:border-amber-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busyKey === `judge:${judge.id}:revoke` ? (
+                        <LoaderCircle className="mr-2 size-4 animate-spin" />
+                      ) : (
+                        <Ban className="mr-2 size-4" />
+                      )}
+                      Revoke
+                    </button>
+                    <button
+                      type="button"
+                      disabled={actionPending || !judge.deletable}
+                      onClick={() => {
+                        void handleJudgeAction(judge.id, "delete");
+                      }}
+                      className="inline-flex min-h-11 items-center justify-center rounded-full border border-rose-300 bg-rose-50 px-4 text-xs font-semibold uppercase tracking-[0.18em] text-rose-800 transition hover:border-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busyKey === `judge:${judge.id}:delete` ? (
+                        <LoaderCircle className="mr-2 size-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="mr-2 size-4" />
+                      )}
+                      Delete
+                    </button>
+                  </div>
+                  {!judge.deletable ? (
+                    <p className="mt-2 text-xs leading-5 text-stone-500">
+                      Delete is only available before this judge has any assignments or comparisons.
+                    </p>
+                  ) : null}
                 </div>
               );
             })}
           </div>
         )}
       </SectionCard>
+
+      {selectedJudgeForQr && selectedJudgeUrl ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/80 px-4 py-6 backdrop-blur-sm"
+          onClick={() => {
+            setSelectedJudgeIdForQr(null);
+          }}
+        >
+          <div
+            className="w-full max-w-3xl rounded-[32px] bg-white p-6 shadow-[0_24px_80px_rgba(0,0,0,0.35)] sm:p-8"
+            onClick={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-stone-500">
+                  Judge QR
+                </p>
+                <h3 className="mt-2 font-display text-4xl text-stone-950">
+                  {selectedJudgeForQr.name ?? "Unnamed judge"}
+                </h3>
+                <p className="mt-3 break-all text-sm leading-6 text-stone-600">
+                  {selectedJudgeUrl}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedJudgeIdForQr(null);
+                }}
+                className="inline-flex size-12 items-center justify-center rounded-full border border-stone-300 text-stone-700 transition hover:border-stone-950"
+              >
+                <X className="size-5" />
+              </button>
+            </div>
+
+            <div className="mt-6 rounded-[32px] border border-stone-200 bg-stone-50 p-6">
+              <QRCodeSVG value={selectedJudgeUrl} size={420} className="mx-auto h-auto max-w-full" />
+            </div>
+
+            <div className="mt-6 flex flex-wrap gap-3">
+              <a
+                href={selectedJudgeUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex min-h-12 items-center rounded-full bg-stone-950 px-5 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-stone-800"
+              >
+                <ExternalLink className="mr-2 size-4" />
+                Open judge link
+              </a>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedJudgeIdForQr(null);
+                }}
+                className="inline-flex min-h-12 items-center rounded-full border border-stone-300 px-5 text-sm font-semibold uppercase tracking-[0.18em] text-stone-900 transition hover:border-stone-950"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

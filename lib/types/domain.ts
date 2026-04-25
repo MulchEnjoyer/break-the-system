@@ -97,7 +97,13 @@ export type ProjectCoverageRow = {
 export type JudgeLinkEntry = Pick<
   JudgeRow,
   "id" | "name" | "token" | "active" | "created_at" | "last_seen_at"
->;
+> & {
+  assignmentCount: number;
+  comparisonCount: number;
+  liveAssignmentCount: number;
+  revoked: boolean;
+  deletable: boolean;
+};
 
 export type AdminDashboardState = {
   event: EventRow;

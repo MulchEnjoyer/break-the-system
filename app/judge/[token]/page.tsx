@@ -5,7 +5,7 @@ import { notFound } from "next/navigation";
 import { JudgeApp } from "@/components/judge-app";
 import { PageShell, SectionCard, SectionHeading } from "@/components/ui";
 import { getNextAssignment } from "@/lib/data/judge";
-import { getJudgeByToken } from "@/lib/data/public";
+import { getJudgeSessionByToken } from "@/lib/data/public";
 
 export default async function JudgePage({
   params,
@@ -13,13 +13,26 @@ export default async function JudgePage({
   params: Promise<{ token: string }>;
 }) {
   const { token } = await params;
-  const judge = await getJudgeByToken(token);
+  const judgeSession = await getJudgeSessionByToken(token);
 
-  if (!judge) {
+  if (!judgeSession) {
     notFound();
   }
 
-  const payload = await getNextAssignment(token);
+  const payload = judgeSession.judge.active
+    ? await getNextAssignment(token)
+    : {
+        assignment: null,
+        judge: {
+          id: judgeSession.judge.id,
+          name: judgeSession.judge.name,
+          active: judgeSession.judge.active,
+          last_seen_at: judgeSession.judge.last_seen_at,
+        },
+        judgeState: judgeSession.judgeState,
+        judgingOpen: false,
+        message: "Judge access has been revoked.",
+      };
 
   return (
     <PageShell className="max-w-3xl">

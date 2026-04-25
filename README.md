@@ -40,6 +40,7 @@ Fill in:
 
 - Open the SQL editor in your Supabase project.
 - Run [`supabase/migrations/202504250001_initial_schema.sql`](/Users/arenung/BreakTheSystem/supabase/migrations/202504250001_initial_schema.sql)
+- Then run [`supabase/migrations/202504250002_admin_controls_and_duplicate_tables.sql`](/Users/arenung/BreakTheSystem/supabase/migrations/202504250002_admin_controls_and_duplicate_tables.sql)
 
 That migration creates:
 
@@ -76,13 +77,16 @@ npm run dev
 - Judges enter through QR codes generated in `/admin`.
 - Each assignment starts as `reserved_find` for 1 minute.
 - When the judge taps `Found team`, the reservation becomes `reserved_judge` for 2 minutes.
-- If the judge skips or the lease expires, the project returns to the pool.
+- If the judge skips, cannot find the participant, or the lease expires, the project returns to the pool.
 - `get_next_assignment` always prefers the lowest-visit eligible projects first, excludes live reservations, and excludes projects already finished or skipped by that judge.
 - Pairwise outcomes update a simple Elo-style rating in `project_rankings`.
 - Freezing results copies the current ranking order into `ranking_snapshots` and switches admin/results pages to that frozen snapshot.
+- Admins can withdraw submissions, revoke judge links, delete unused judge links, and enlarge QR codes into a full-screen overlay for faster scanning.
 
 ## Operational notes
 
+- Duplicate table numbers are allowed. Judges route by table number first, then disambiguate by project title and team name.
+- Submission links are normalized to `https://` automatically when a team omits the scheme.
 - `visit_count` increases only when a project was actually reached during the judging stage.
 - The assignment lease uses a small 15-second backend grace window to absorb mobile latency when judges submit right after a timer ends.
 - Admin updates use polling every 10 seconds. This keeps the MVP simple while still giving live coverage visibility.

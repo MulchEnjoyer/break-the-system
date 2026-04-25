@@ -7,6 +7,7 @@ import type {
   EventRow,
   JudgeLinkEntry,
   ProjectCoverageRow,
+  ProjectRow,
   RankingEntry,
   RankingSnapshotRow,
 } from "@/lib/types/domain";
@@ -18,8 +19,61 @@ type AdminAction =
   | "close_judging"
   | "freeze_rankings";
 
+type JudgeManagementAction = "revoke" | "delete";
+type ProjectManagementAction = "withdraw";
+
+const ELO_START_RATING = 1500;
+const ELO_K_FACTOR = 24;
+const LIVE_ASSIGNMENT_GRACE_MS = 15_000;
+
 function minutesAgo(minutes: number) {
   return new Date(Date.now() - minutes * 60_000).toISOString();
+}
+
+function liveAssignmentCutoff() {
+  return new Date(Date.now() - LIVE_ASSIGNMENT_GRACE_MS).toISOString();
+}
+
+function sortRankings(
+  left: RankingEntry,
+  right: RankingEntry,
+  useFrozenPosition = false,
+) {
+  if (useFrozenPosition) {
+    return (left.frozenPosition ?? 10_000) - (right.frozenPosition ?? 10_000);
+  }
+
+  if (right.rating !== left.rating) {
+    return right.rating - left.rating;
+  }
+
+  if (right.comparisons !== left.comparisons) {
+    return right.comparisons - left.comparisons;
+  }
+
+  if (right.visits !== left.visits) {
+    return right.visits - left.visits;
+  }
+
+  if (left.tableNumber !== right.tableNumber) {
+    return left.tableNumber - right.tableNumber;
+  }
+
+  return left.title.localeCompare(right.title);
+}
+
+function applyEloResult(
+  winnerRating: number,
+  loserRating: number,
+  kFactor = ELO_K_FACTOR,
+) {
+  const winnerExpected = 1 / (1 + 10 ** ((loserRating - winnerRating) / 400));
+  const loserExpected = 1 / (1 + 10 ** ((winnerRating - loserRating) / 400));
+
+  return {
+    winner: Number((winnerRating + kFactor * (1 - winnerExpected)).toFixed(4)),
+    loser: Number((loserRating + kFactor * (0 - loserExpected)).toFixed(4)),
+  };
 }
 
 export async function verifyAdminAccess(accessToken: string) {
@@ -82,42 +136,9 @@ export async function getRequiredEvent() {
   return data;
 }
 
-function sortRankings(
-  left: RankingEntry,
-  right: RankingEntry,
-  useFrozenPosition = false,
-) {
-  if (useFrozenPosition) {
-    return (left.frozenPosition ?? 10_000) - (right.frozenPosition ?? 10_000);
-  }
-
-  if (right.rating !== left.rating) {
-    return right.rating - left.rating;
-  }
-
-  if (right.comparisons !== left.comparisons) {
-    return right.comparisons - left.comparisons;
-  }
-
-  if (right.visits !== left.visits) {
-    return right.visits - left.visits;
-  }
-
-  return left.tableNumber - right.tableNumber;
-}
-
 function buildFrozenRankings(
   rows: RankingSnapshotRow[],
-  projectMap: Map<
-    string,
-    {
-      title: string;
-      team_name: string;
-      table_number: number;
-      stream: "most_useful" | "most_useless";
-      visit_count: number;
-    }
-  >,
+  projectMap: Map<string, ProjectRow>,
 ) {
   const entries: RankingEntry[] = [];
 
@@ -154,16 +175,7 @@ function buildLiveRankings(
     losses: number;
     comparisons: number;
   }[],
-  projectMap: Map<
-    string,
-    {
-      title: string;
-      team_name: string;
-      table_number: number;
-      stream: "most_useful" | "most_useless";
-      visit_count: number;
-    }
-  >,
+  projectMap: Map<string, ProjectRow>,
 ) {
   const entries: RankingEntry[] = [];
 
@@ -192,11 +204,235 @@ function buildLiveRankings(
   return entries.sort(sortRankings);
 }
 
+export async function rebuildEventRankings(eventId: string) {
+  const supabase = createServiceRoleClient();
+
+  const [{ data: activeProjects, error: projectsError }, { data: comparisons, error: comparisonsError }] =
+    await Promise.all([
+      supabase
+        .from("projects")
+        .select("id, event_id")
+        .eq("event_id", eventId)
+        .neq("status", "withdrawn"),
+      supabase
+        .from("comparisons")
+        .select("winner_project_id, loser_project_id, created_at")
+        .eq("event_id", eventId)
+        .order("created_at", { ascending: true }),
+    ]);
+
+  if (projectsError) {
+    throw new Error(projectsError.message);
+  }
+
+  if (comparisonsError) {
+    throw new Error(comparisonsError.message);
+  }
+
+  const activeProjectIds = new Set((activeProjects ?? []).map((project) => project.id));
+  const ratings = new Map(
+    (activeProjects ?? []).map((project) => [
+      project.id,
+      {
+        project_id: project.id,
+        event_id: eventId,
+        rating: ELO_START_RATING,
+        wins: 0,
+        losses: 0,
+        comparisons: 0,
+      },
+    ]),
+  );
+
+  for (const comparison of comparisons ?? []) {
+    if (
+      !activeProjectIds.has(comparison.winner_project_id) ||
+      !activeProjectIds.has(comparison.loser_project_id)
+    ) {
+      continue;
+    }
+
+    const winner = ratings.get(comparison.winner_project_id);
+    const loser = ratings.get(comparison.loser_project_id);
+
+    if (!winner || !loser) {
+      continue;
+    }
+
+    const nextRatings = applyEloResult(winner.rating, loser.rating);
+    winner.rating = nextRatings.winner;
+    winner.wins += 1;
+    winner.comparisons += 1;
+
+    loser.rating = nextRatings.loser;
+    loser.losses += 1;
+    loser.comparisons += 1;
+  }
+
+  const { error: deleteError } = await supabase
+    .from("project_rankings")
+    .delete()
+    .eq("event_id", eventId);
+
+  if (deleteError) {
+    throw new Error(deleteError.message);
+  }
+
+  const rows = Array.from(ratings.values());
+
+  if (rows.length === 0) {
+    return;
+  }
+
+  const { error: insertError } = await supabase
+    .from("project_rankings")
+    .insert(rows);
+
+  if (insertError) {
+    throw new Error(insertError.message);
+  }
+}
+
+export async function withdrawProject(
+  projectId: string,
+  action: ProjectManagementAction = "withdraw",
+) {
+  if (action !== "withdraw") {
+    throw new Error("Unsupported project action.");
+  }
+
+  const supabase = createServiceRoleClient();
+  const { data: project, error: projectError } = await supabase
+    .from("projects")
+    .select("id, event_id, status")
+    .eq("id", projectId)
+    .maybeSingle();
+
+  if (projectError) {
+    throw new Error(projectError.message);
+  }
+
+  if (!project) {
+    throw new Error("Project not found.");
+  }
+
+  if (project.status === "withdrawn") {
+    return;
+  }
+
+  const { error: updateError } = await supabase
+    .from("projects")
+    .update({ status: "withdrawn" })
+    .eq("id", projectId);
+
+  if (updateError) {
+    throw new Error(updateError.message);
+  }
+
+  const { error: expireError } = await supabase
+    .from("assignments")
+    .update({ status: "expired" })
+    .eq("project_id", projectId)
+    .in("status", ["reserved_find", "reserved_judge"]);
+
+  if (expireError) {
+    throw new Error(expireError.message);
+  }
+
+  const { error: judgeStateError } = await supabase
+    .from("judge_state")
+    .update({ last_completed_project_id: null })
+    .eq("last_completed_project_id", projectId);
+
+  if (judgeStateError) {
+    throw new Error(judgeStateError.message);
+  }
+
+  await rebuildEventRankings(project.event_id);
+}
+
+export async function manageJudge(
+  judgeId: string,
+  action: JudgeManagementAction,
+) {
+  const supabase = createServiceRoleClient();
+  const { data: judge, error: judgeError } = await supabase
+    .from("judges")
+    .select("id, event_id, active")
+    .eq("id", judgeId)
+    .maybeSingle();
+
+  if (judgeError) {
+    throw new Error(judgeError.message);
+  }
+
+  if (!judge) {
+    throw new Error("Judge not found.");
+  }
+
+  if (action === "revoke") {
+    const { error: revokeError } = await supabase
+      .from("judges")
+      .update({ active: false })
+      .eq("id", judgeId);
+
+    if (revokeError) {
+      throw new Error(revokeError.message);
+    }
+
+    const { error: expireError } = await supabase
+      .from("assignments")
+      .update({ status: "expired" })
+      .eq("judge_id", judgeId)
+      .in("status", ["reserved_find", "reserved_judge"]);
+
+    if (expireError) {
+      throw new Error(expireError.message);
+    }
+
+    return;
+  }
+
+  const [
+    { count: assignmentCount, error: assignmentsError },
+    { count: comparisonCount, error: comparisonsError },
+  ] = await Promise.all([
+    supabase
+      .from("assignments")
+      .select("id", { count: "exact", head: true })
+      .eq("judge_id", judgeId),
+    supabase
+      .from("comparisons")
+      .select("id", { count: "exact", head: true })
+      .eq("judge_id", judgeId),
+  ]);
+
+  if (assignmentsError) {
+    throw new Error(assignmentsError.message);
+  }
+
+  if (comparisonsError) {
+    throw new Error(comparisonsError.message);
+  }
+
+  if ((assignmentCount ?? 0) > 0 || (comparisonCount ?? 0) > 0) {
+    throw new Error("This judge has history and must be revoked instead of deleted.");
+  }
+
+  const { error: deleteError } = await supabase
+    .from("judges")
+    .delete()
+    .eq("id", judgeId);
+
+  if (deleteError) {
+    throw new Error(deleteError.message);
+  }
+}
+
 export async function getAdminDashboardState(): Promise<AdminDashboardState> {
   const supabase = createServiceRoleClient();
   const event = await getRequiredEvent();
-
-  const liveReservationCutoff = new Date(Date.now() - 15_000).toISOString();
+  const liveReservationCutoff = liveAssignmentCutoff();
 
   const [
     projectsResult,
@@ -206,14 +442,18 @@ export async function getAdminDashboardState(): Promise<AdminDashboardState> {
     reservationsResult,
     rankingsResult,
     frozenRankingsResult,
+    assignmentsByJudgeResult,
+    comparisonsByJudgeResult,
   ] = await Promise.all([
     supabase
       .from("projects")
       .select(
-        "id, team_name, title, description, stream, table_number, project_link, status, visit_count, comparison_count, created_at, updated_at",
+        "id, event_id, team_name, title, description, stream, table_number, project_link, status, visit_count, comparison_count, created_at, updated_at",
       )
       .eq("event_id", event.id)
-      .order("table_number", { ascending: true }),
+      .neq("status", "withdrawn")
+      .order("table_number", { ascending: true })
+      .order("title", { ascending: true }),
     supabase
       .from("judges")
       .select("id, name, token, active, created_at, last_seen_at")
@@ -249,6 +489,14 @@ export async function getAdminDashboardState(): Promise<AdminDashboardState> {
       )
       .eq("event_id", event.id)
       .order("frozen_position", { ascending: true }),
+    supabase
+      .from("assignments")
+      .select("judge_id, status, expires_at")
+      .eq("event_id", event.id),
+    supabase
+      .from("comparisons")
+      .select("judge_id")
+      .eq("event_id", event.id),
   ]);
 
   if (projectsResult.error) {
@@ -272,13 +520,61 @@ export async function getAdminDashboardState(): Promise<AdminDashboardState> {
   if (frozenRankingsResult.error) {
     throw new Error(frozenRankingsResult.error.message);
   }
+  if (assignmentsByJudgeResult.error) {
+    throw new Error(assignmentsByJudgeResult.error.message);
+  }
+  if (comparisonsByJudgeResult.error) {
+    throw new Error(comparisonsByJudgeResult.error.message);
+  }
 
-  const projects = projectsResult.data ?? [];
-  const judges = (judgesResult.data ?? []) as JudgeLinkEntry[];
+  const projects = (projectsResult.data ?? []) as ProjectRow[];
+  const projectMap = new Map(projects.map((project) => [project.id, project]));
+  const assignmentCountByJudge = new Map<string, number>();
+  const liveAssignmentCountByJudge = new Map<string, number>();
+  const comparisonCountByJudge = new Map<string, number>();
+
+  for (const assignment of assignmentsByJudgeResult.data ?? []) {
+    assignmentCountByJudge.set(
+      assignment.judge_id,
+      (assignmentCountByJudge.get(assignment.judge_id) ?? 0) + 1,
+    );
+
+    if (
+      ["reserved_find", "reserved_judge"].includes(assignment.status) &&
+      new Date(assignment.expires_at).getTime() > Date.now() - LIVE_ASSIGNMENT_GRACE_MS
+    ) {
+      liveAssignmentCountByJudge.set(
+        assignment.judge_id,
+        (liveAssignmentCountByJudge.get(assignment.judge_id) ?? 0) + 1,
+      );
+    }
+  }
+
+  for (const comparison of comparisonsByJudgeResult.data ?? []) {
+    comparisonCountByJudge.set(
+      comparison.judge_id,
+      (comparisonCountByJudge.get(comparison.judge_id) ?? 0) + 1,
+    );
+  }
+
+  const judges: JudgeLinkEntry[] = (judgesResult.data ?? []).map((judge) => {
+    const assignmentCount = assignmentCountByJudge.get(judge.id) ?? 0;
+    const comparisonCount = comparisonCountByJudge.get(judge.id) ?? 0;
+    const liveAssignmentCount = liveAssignmentCountByJudge.get(judge.id) ?? 0;
+
+    return {
+      ...judge,
+      assignmentCount,
+      comparisonCount,
+      liveAssignmentCount,
+      revoked: !judge.active,
+      deletable: assignmentCount === 0 && comparisonCount === 0,
+    };
+  });
+
+  const judgeMap = new Map(judges.map((judge) => [judge.id, judge]));
   const rankingRows = rankingsResult.data ?? [];
   const frozenRows = (frozenRankingsResult.data ?? []) as RankingSnapshotRow[];
-  const projectMap = new Map(projects.map((project) => [project.id, project]));
-  const judgeMap = new Map(judges.map((judge) => [judge.id, judge]));
 
   const rankings = event.rankings_frozen
     ? buildFrozenRankings(frozenRows, projectMap)
@@ -314,7 +610,13 @@ export async function getAdminDashboardState(): Promise<AdminDashboardState> {
       };
     })
     .filter((value): value is NonNullable<typeof value> => Boolean(value))
-    .sort((left, right) => left.tableNumber - right.tableNumber);
+    .sort((left, right) => {
+      if (left.tableNumber !== right.tableNumber) {
+        return left.tableNumber - right.tableNumber;
+      }
+
+      return left.projectTitle.localeCompare(right.projectTitle);
+    });
 
   const reservationByProjectId = new Map(
     reservations.map((reservation) => [reservation.projectId, reservation]),
@@ -337,7 +639,13 @@ export async function getAdminDashboardState(): Promise<AdminDashboardState> {
         reservationJudgeName: reservation?.judgeName ?? null,
       };
     })
-    .sort((left, right) => left.tableNumber - right.tableNumber);
+    .sort((left, right) => {
+      if (left.tableNumber !== right.tableNumber) {
+        return left.tableNumber - right.tableNumber;
+      }
+
+      return left.title.localeCompare(right.title);
+    });
 
   const metrics = {
     totalSubmissions: projects.length,
@@ -391,7 +699,14 @@ export async function generateJudgeLinks(count: number, prefix = "Judge") {
     throw new Error(error.message);
   }
 
-  return (data ?? []) as JudgeLinkEntry[];
+  return (data ?? []).map((judge) => ({
+    ...judge,
+    assignmentCount: 0,
+    comparisonCount: 0,
+    liveAssignmentCount: 0,
+    revoked: !judge.active,
+    deletable: true,
+  })) as JudgeLinkEntry[];
 }
 
 export async function updateEventState(action: AdminAction) {

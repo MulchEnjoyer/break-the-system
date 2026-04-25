@@ -33,7 +33,7 @@ export default function Home() {
                 </p>
                 <p className="mt-2 font-display text-3xl text-stone-950">/submit</p>
                 <p className="mt-2 text-sm leading-6 text-stone-600">
-                  Team submission form with unique table enforcement.
+                  Team submission form with smart link parsing and shared-table support.
                 </p>
               </Link>
               <Link

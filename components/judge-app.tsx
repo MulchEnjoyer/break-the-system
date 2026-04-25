@@ -39,6 +39,7 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
   const [payload, setPayload] = useState(initialPayload);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessionRevoked, setSessionRevoked] = useState(!initialPayload.judge.active);
   const [now, setNow] = useState(() => Date.now());
   const autoSkipAssignmentId = useRef<string | null>(null);
 
@@ -65,12 +66,30 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
         body,
       );
       setPayload(nextPayload);
+      setSessionRevoked(!nextPayload.judge.active);
       autoSkipAssignmentId.current = null;
     } catch (requestError) {
-      setError(
+      const message =
         requestError instanceof Error
           ? requestError.message
-          : "That action could not be completed.",
+          : "That action could not be completed.";
+
+      if (message.toLowerCase().includes("revoked")) {
+        setSessionRevoked(true);
+        setPayload((currentPayload) => ({
+          ...currentPayload,
+          assignment: null,
+          judgingOpen: false,
+          message: "Judge access has been revoked.",
+          judge: {
+            ...currentPayload.judge,
+            active: false,
+          },
+        }));
+      }
+
+      setError(
+        message,
       );
     } finally {
       setPending(false);
@@ -97,7 +116,7 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
   }, []);
 
   useEffect(() => {
-    if (!payload.judgingOpen || assignment || pending) {
+    if (sessionRevoked || !payload.judgingOpen || assignment || pending) {
       return;
     }
 
@@ -108,10 +127,15 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
     }, 7000);
 
     return () => window.clearInterval(intervalId);
-  }, [assignment, payload.judgingOpen, pending]);
+  }, [assignment, payload.judgingOpen, pending, sessionRevoked]);
 
   useEffect(() => {
-    if (!assignment || assignment.status !== "reserved_find" || secondsRemaining > 0) {
+    if (
+      sessionRevoked ||
+      !assignment ||
+      assignment.status !== "reserved_find" ||
+      secondsRemaining > 0
+    ) {
       return;
     }
 
@@ -121,7 +145,7 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
 
     autoSkipAssignmentId.current = assignment.id;
     skipAssignmentInEffect(assignment.id);
-  }, [assignment, pending, secondsRemaining]);
+  }, [assignment, pending, secondsRemaining, sessionRevoked]);
 
   return (
     <div className="grid gap-4">
@@ -137,8 +161,14 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
               </h1>
             </div>
             <StatusPill
-              label={payload.judgingOpen ? "Judging open" : "Judging closed"}
-              tone={payload.judgingOpen ? "success" : "warning"}
+              label={
+                sessionRevoked
+                  ? "Access revoked"
+                  : payload.judgingOpen
+                    ? "Judging open"
+                    : "Judging closed"
+              }
+              tone={sessionRevoked ? "danger" : payload.judgingOpen ? "success" : "warning"}
             />
           </div>
 
@@ -169,14 +199,21 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
         </p>
       ) : null}
 
-      {!payload.judgingOpen ? (
+      {sessionRevoked ? (
+        <EmptyState
+          title="Judge access revoked."
+          description="This QR session has been disabled by an organizer. Ask the admin for a new judge link if you still need to evaluate projects."
+        />
+      ) : null}
+
+      {!sessionRevoked && !payload.judgingOpen ? (
         <EmptyState
           title="Judging is closed."
           description="Ask the organizer to open judging from the admin dashboard before requesting more assignments."
         />
       ) : null}
 
-      {!assignment && payload.judgingOpen ? (
+      {!sessionRevoked && !assignment && payload.judgingOpen ? (
         <SectionCard className="space-y-4">
           <EmptyState
             title="No assignment ready right now."
@@ -265,7 +302,7 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
                 {assignment.project.description}
               </p>
 
-              <div className="flex flex-wrap gap-3">
+            <div className="flex flex-wrap gap-3">
                 <a
                   href={assignment.project.project_link}
                   target="_blank"
@@ -283,24 +320,42 @@ export function JudgeApp({ token, initialPayload }: JudgeAppProps) {
             </div>
 
             {isFindStage ? (
-              <button
-                type="button"
-                disabled={pending}
-                onClick={() => {
-                  void performJudgeAction("/api/judge/found", {
-                    token,
-                    assignmentId: assignment.id,
-                  });
-                }}
-                className="inline-flex min-h-16 w-full items-center justify-center rounded-[22px] bg-stone-950 px-6 text-base font-semibold uppercase tracking-[0.2em] text-stone-50 transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-400"
-              >
-                {pending ? (
-                  <LoaderCircle className="mr-2 size-5 animate-spin" />
-                ) : (
-                  <TimerReset className="mr-2 size-5" />
-                )}
-                Found team
-              </button>
+              <div className="grid gap-3">
+                <div className="rounded-[24px] border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+                  If the participant is not here or you cannot find them, skip now instead of waiting for the timer to expire.
+                </div>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    void performJudgeAction("/api/judge/found", {
+                      token,
+                      assignmentId: assignment.id,
+                    });
+                  }}
+                  className="inline-flex min-h-16 w-full items-center justify-center rounded-[22px] bg-stone-950 px-6 text-base font-semibold uppercase tracking-[0.2em] text-stone-50 transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-400"
+                >
+                  {pending ? (
+                    <LoaderCircle className="mr-2 size-5 animate-spin" />
+                  ) : (
+                    <TimerReset className="mr-2 size-5" />
+                  )}
+                  Found team
+                </button>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    void performJudgeAction("/api/judge/skip", {
+                      token,
+                      assignmentId: assignment.id,
+                    });
+                  }}
+                  className="inline-flex min-h-16 w-full items-center justify-center rounded-[22px] border border-stone-300 bg-white px-6 text-sm font-semibold uppercase tracking-[0.2em] text-stone-900 transition hover:border-stone-950 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Can&apos;t find participant / not at table
+                </button>
+              </div>
             ) : null}
 
             {isJudgeStage && !canCompare ? (

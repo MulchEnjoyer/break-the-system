@@ -2,6 +2,24 @@ import { z } from "zod";
 
 export const streamSchema = z.enum(["most_useful", "most_useless"]);
 
+function normalizeProjectLink(value: unknown) {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  if (/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(trimmed)) {
+    return trimmed;
+  }
+
+  return `https://${trimmed}`;
+}
+
 export const submissionSchema = z.object({
   teamName: z
     .string()
@@ -23,13 +41,16 @@ export const submissionSchema = z.object({
     .number()
     .int("Table number must be a whole number.")
     .positive("Table number must be positive."),
-  projectLink: z
-    .string()
-    .trim()
-    .url("Project link must be a valid URL.")
-    .refine((value) => value.startsWith("http://") || value.startsWith("https://"), {
-      message: "Project link must start with http:// or https://.",
-    }),
+  projectLink: z.preprocess(
+    normalizeProjectLink,
+    z
+      .string()
+      .trim()
+      .url("Project link must be a valid URL.")
+      .refine((value) => /^https?:\/\//.test(value), {
+        message: "Project link must use http:// or https://.",
+      }),
+  ),
 });
 
 export const judgeTokenSchema = z.object({
@@ -73,6 +94,18 @@ export const eventControlSchema = z.object({
     "close_judging",
     "freeze_rankings",
   ]),
+});
+
+export const adminProjectActionSchema = z.object({
+  accessToken: z.string().trim().min(1),
+  projectId: z.string().uuid("Project ID is invalid."),
+  action: z.enum(["withdraw"]),
+});
+
+export const adminJudgeActionSchema = z.object({
+  accessToken: z.string().trim().min(1),
+  judgeId: z.string().uuid("Judge ID is invalid."),
+  action: z.enum(["revoke", "delete"]),
 });
 
 export const judgePayloadSchema = z.object({

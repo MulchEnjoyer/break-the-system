@@ -50,16 +50,6 @@ export async function submitProjectAction(
   });
 
   if (error) {
-    if (error.code === "23505") {
-      return {
-        errors: {
-          tableNumber: ["That table number is already taken."],
-        },
-        message: "Choose a different table number.",
-        success: false,
-      };
-    }
-
     return {
       message: error.message,
       success: false,
@@ -72,6 +62,7 @@ export async function submitProjectAction(
 
   return {
     success: true,
-    message: "Submission received. Judges can now find you by table number.",
+    message:
+      "Submission received. Judges can now find you by table number, team, and project title.",
   };
 }
