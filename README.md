@@ -41,6 +41,7 @@ Fill in:
 - Open the SQL editor in your Supabase project.
 - Run [`supabase/migrations/202504250001_initial_schema.sql`](/Users/arenung/BreakTheSystem/supabase/migrations/202504250001_initial_schema.sql)
 - Then run [`supabase/migrations/202504250002_admin_controls_and_duplicate_tables.sql`](/Users/arenung/BreakTheSystem/supabase/migrations/202504250002_admin_controls_and_duplicate_tables.sql)
+- Then run [`supabase/migrations/202504250003_allow_judge_completion_until_release.sql`](/Users/arenung/BreakTheSystem/supabase/migrations/202504250003_allow_judge_completion_until_release.sql)
 
 That migration creates:
 
@@ -88,7 +89,7 @@ npm run dev
 - Duplicate table numbers are allowed. Judges route by table number first, then disambiguate by project title and team name.
 - Submission links are normalized to `https://` automatically when a team omits the scheme.
 - `visit_count` increases only when a project was actually reached during the judging stage.
-- The assignment lease uses a small 15-second backend grace window to absorb mobile latency when judges submit right after a timer ends.
+- Find-stage leases use a small 15-second backend grace window to absorb mobile latency. Once a judge has found a team, completion remains available until that reservation is released, expired, skipped, or completed.
 - Admin updates use polling every 10 seconds. This keeps the MVP simple while still giving live coverage visibility.
 
 ## Validation
